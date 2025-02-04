@@ -55,7 +55,7 @@ void filter_and_save_json(const char *input, const char *filter_key, struct Buff
 
     cJSON *data = cJSON_GetObjectItem(json, "data");
     if (!cJSON_IsArray(data)) {
-        fprintf(stderr, "Erro: 'data' não é uma lista.\n");
+        fprintf(stderr, "Erro: 'data2' não é uma lista.\n");
         cJSON_Delete(json);
         return ;
     }
@@ -95,7 +95,7 @@ int bullish_engulfment(const char* input) {
     cJSON *json = cJSON_Parse(input);
     cJSON *data = cJSON_GetObjectItem(json, "data");
     if (!cJSON_IsArray(data)) {
-        fprintf(stderr, "Erro: 'data' não é uma lista.\n");
+        fprintf(stderr, "Erro: 'data1' não é uma lista.\n");
         cJSON_Delete(json);
         return 0;
     }
@@ -194,6 +194,75 @@ void add_obj_to_array(const char* buffer, cJSON *array, char* coin, double found
     cJSON_Delete(index);
 }
 
+int rising(const char* buffer) {
+    cJSON *json = cJSON_Parse(buffer);
+
+    if (!json) {
+        fprintf(stderr, "Erro ao analisar JSON.\n");
+        return 0;
+    }  
+
+    cJSON *data = cJSON_GetObjectItem(json, "data");
+    int arraySize = cJSON_GetArraySize(data);
+    cJSON *candleAvg = cJSON_CreateArray();
+
+    for (int i = 0; i < arraySize; i++) {
+        cJSON *candle = cJSON_GetArrayItem(data, i);
+        
+        cJSON *close = cJSON_GetObjectItem(candle, "close");
+        const char *close_str = close->valuestring;
+        char *endptrClose;
+        double close_num = strtod(close_str, &endptrClose);
+
+        cJSON *open = cJSON_GetObjectItem(candle, "open");
+        const char *open_str = open->valuestring;
+        char *endptrOpen;
+        double open_num = strtod(open_str, &endptrOpen);
+        
+        double avg = (close_num + open_num) / 2;
+        cJSON *objAvg = cJSON_CreateObject();
+        cJSON_AddNumberToObject(objAvg, "avg", avg);
+        cJSON_AddItemToArray(candleAvg,objAvg);
+    }
+    int candleAvgSize = cJSON_GetArraySize(candleAvg);
+    cJSON *avgItemNew = cJSON_GetArrayItem(candleAvg, 3);
+    cJSON *avgItemOld = cJSON_GetArrayItem(candleAvg, 0);
+
+    double newAvg_num = cJSON_GetObjectItem(avgItemNew, "avg")->valuedouble;
+    double oldAvg_num = cJSON_GetObjectItem(avgItemOld, "avg")->valuedouble;
+
+    cJSON_Delete(candleAvg);
+    cJSON_Delete(json);
+
+    return (newAvg_num > oldAvg_num) ? 1 : 0;
+}
+
+int is_rising(const char* coin, CURL *curl) {
+    struct BufferStruct chunck = {NULL, 0};
+    chunck.buffer = malloc(1);
+    chunck.size = 0;
+
+    char url[128];
+    sprintf(url, "%s/spot/kline?market=%s&limit=4&period=%s", API_URL, coin, "3day");
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void*)&chunck);
+
+    CURLcode res = curl_easy_perform(curl);
+    if (res != CURLE_OK) {
+        fprintf(stderr, "Erro ao buscar candles para %s: %s\n", coin, curl_easy_strerror(res));
+    } 
+    if(rising(chunck.buffer)) {
+        free(chunck.buffer);
+        chunck.size = 0;
+        return 1;
+    }
+    free(chunck.buffer);
+    chunck.size = 0;
+    return 0;
+}
+
 void create_order() {}
 
 void buy_or_notbuy(
@@ -229,11 +298,10 @@ void buy_or_notbuy(
             fprintf(stderr, "Erro ao buscar candles para %s: %s\n", market->valuestring, curl_easy_strerror(res));
         } else {
             if (strlen(chunck.buffer) > 0 && bullish_engulfment(chunck.buffer)) {
-                printf("%s\n", market->valuestring);
-                get_info_coin(curl, chunck.buffer, market->valuestring, res, &chunck);
-
-                add_obj_to_array(chunck.buffer, coinBuy, market->valuestring, founds);
-
+                if(strlen(chunck.buffer) > 0 && is_rising(market->valuestring, curl)) {
+                    get_info_coin(curl, chunck.buffer, market->valuestring, res, &chunck);
+                    add_obj_to_array(chunck.buffer, coinBuy, market->valuestring, founds);
+                }
             }
         }
         free(chunck.buffer);

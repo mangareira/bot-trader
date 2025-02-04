@@ -1,0 +1,7 @@
+{
+  "files.associations": {
+    "*.embeddedhtml": "html",
+    "cjson.h": "c",
+    "curl.h": "c"
+  }
+}
