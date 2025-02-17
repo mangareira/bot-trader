@@ -194,18 +194,20 @@ void add_obj_to_array(const char* buffer, cJSON *array, char* coin, double found
     cJSON_Delete(index);
 }
 
-int rising(const char* buffer) {
-    cJSON *json = cJSON_Parse(buffer);
+int compare_avg(const void *a, const void *b) {
+    cJSON *objA = *(cJSON **)a;
+    cJSON *objB = *(cJSON **)b;
 
-    if (!json) {
-        fprintf(stderr, "Erro ao analisar JSON.\n");
-        return 0;
-    }  
+    // Obtém os valores de "avg" de cada objeto
+    double avgA = cJSON_GetObjectItem(objA, "avg")->valuedouble;
+    double avgB = cJSON_GetObjectItem(objB, "avg")->valuedouble;
 
-    cJSON *data = cJSON_GetObjectItem(json, "data");
-    int arraySize = cJSON_GetArraySize(data);
-    cJSON *candleAvg = cJSON_CreateArray();
+    if (avgA < avgB) return -1;
+    if (avgA > avgB) return 1;
+    return 0;
+}
 
+void setAvg(cJSON *data, cJSON *array, int arraySize) {
     for (int i = 0; i < arraySize; i++) {
         cJSON *candle = cJSON_GetArrayItem(data, i);
         
@@ -222,8 +224,23 @@ int rising(const char* buffer) {
         double avg = (close_num + open_num) / 2;
         cJSON *objAvg = cJSON_CreateObject();
         cJSON_AddNumberToObject(objAvg, "avg", avg);
-        cJSON_AddItemToArray(candleAvg,objAvg);
+        cJSON_AddItemToArray(array,objAvg);
     }
+}
+
+int rising(const char* buffer) {
+    cJSON *json = cJSON_Parse(buffer);
+
+    if (!json) {
+        fprintf(stderr, "Erro ao analisar JSON.\n");
+        return 0;
+    }  
+
+    cJSON *data = cJSON_GetObjectItem(json, "data");
+    int arraySize = cJSON_GetArraySize(data);
+    cJSON *candleAvg = cJSON_CreateArray();
+
+    setAvg(data, candleAvg, arraySize);
     int candleAvgSize = cJSON_GetArraySize(candleAvg);
     cJSON *avgItemNew = cJSON_GetArrayItem(candleAvg, 3);
     cJSON *avgItemOld = cJSON_GetArrayItem(candleAvg, 0);
@@ -237,7 +254,7 @@ int rising(const char* buffer) {
     return (newAvg_num > oldAvg_num) ? 1 : 0;
 }
 
-int is_rising(const char* coin, CURL *curl) {
+int is_rising_mediun(const char* coin, CURL *curl) {
     struct BufferStruct chunck = {NULL, 0};
     chunck.buffer = malloc(1);
     chunck.size = 0;
@@ -261,6 +278,129 @@ int is_rising(const char* coin, CURL *curl) {
     free(chunck.buffer);
     chunck.size = 0;
     return 0;
+}
+
+void sort(cJSON* candleAvg) {
+    int size = cJSON_GetArraySize(candleAvg);
+    cJSON **tempArray = (cJSON **)malloc(size * sizeof(cJSON *));
+    
+    for (int i = 0; i < size; i++) {
+        tempArray[i] = cJSON_DetachItemFromArray(candleAvg, 0);
+    }
+
+    qsort(tempArray, size, sizeof(cJSON *), compare_avg);
+
+    for (int i = 0; i < size; i++) {
+        cJSON_AddItemToArray(candleAvg, tempArray[i]);
+    }
+
+    free(tempArray);
+}
+
+void remove_candles(cJSON* candleAvg) {
+    for(int i = 0; i < 3; i++) {
+        cJSON_DeleteItemFromArray(candleAvg, i);
+    }
+    for(int i = 1; i <=3; i++) {
+        cJSON_DeleteItemFromArray(candleAvg, cJSON_GetArraySize(candleAvg) - i);
+    }
+}
+
+int check_below(const char* buffer) {
+
+    cJSON *json = cJSON_Parse(buffer);
+
+    if (!json) {
+        fprintf(stderr, "Erro ao analisar JSON.\n");
+        return 0;
+    }  
+
+    cJSON *data = cJSON_GetObjectItem(json, "data");
+    int arraySize = cJSON_GetArraySize(data);
+    cJSON *candleAvg = cJSON_CreateArray();
+    
+    cJSON* item_array = cJSON_GetArrayItem(data, 32);
+    cJSON* price = cJSON_GetObjectItem(item_array, "close");
+    const char *price_str = price->valuestring;
+    char *endptr;
+    double price_num = strtod(price_str, &endptr);
+
+    cJSON* price_open = cJSON_GetObjectItem(item_array, "open");
+    const char *price_open_str = price_open->valuestring;
+    char *endptrOpen;
+    double price_open_num = strtod(price_open_str, &endptrOpen);
+
+    setAvg(data, candleAvg, arraySize);
+    sort(candleAvg);
+    remove_candles(candleAvg);
+
+    double sum;
+
+    for(int i = 0; i < cJSON_GetArraySize(candleAvg) - 1;i++) {
+        cJSON* item = cJSON_GetArrayItem(candleAvg, i);
+        cJSON* avg = cJSON_GetObjectItem(item, "avg");
+        sum = sum + avg->valuedouble;
+    }
+
+    double resist = (sum / cJSON_GetArraySize(candleAvg));
+
+    cJSON_Delete(json);
+    return ((price_num < resist) && ((((price_num - price_open_num)/ price_open_num) * 100) < 3.3) && ((((price_num - price_open_num)/ price_open_num) * 100) > -9.9));
+}
+
+int check_if_is_below(const char* coin, CURL *curl) {
+    struct BufferStruct chunck = {NULL, 0};
+    chunck.buffer = malloc(1);
+    chunck.size = 0;
+
+    char url[128];
+    sprintf(url, "%s/spot/kline?market=%s&limit=33&period=%s", API_URL, coin, "2hour");
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void*)&chunck);
+
+    CURLcode res = curl_easy_perform(curl);
+    if (res != CURLE_OK) {
+        fprintf(stderr, "Erro ao buscar candles para %s: %s\n", coin, curl_easy_strerror(res));
+    } 
+
+    if(check_below(chunck.buffer)){
+        free(chunck.buffer);
+        chunck.size = 0;
+        return 1;
+    }
+    free(chunck.buffer);
+    chunck.size = 0;
+    return 0;
+}
+
+int is_rising_long(const char* coin, CURL *curl) {
+
+    struct BufferStruct chunck = {NULL, 0};
+    chunck.buffer = malloc(1);
+    chunck.size = 0;
+
+    char url[128];
+    sprintf(url, "%s/spot/kline?market=%s&limit=5&period=%s", API_URL, coin, "1week");
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void*)&chunck);
+
+    CURLcode res = curl_easy_perform(curl);
+    if (res != CURLE_OK) {
+        fprintf(stderr, "Erro ao buscar candles para %s: %s\n", coin, curl_easy_strerror(res));
+    } 
+    if(rising(chunck.buffer)) {
+        free(chunck.buffer);
+        chunck.size = 0;
+        return 1;
+    }
+    free(chunck.buffer);
+    chunck.size = 0;
+    return 0;
+
 }
 
 void create_order() {}
@@ -298,9 +438,13 @@ void buy_or_notbuy(
             fprintf(stderr, "Erro ao buscar candles para %s: %s\n", market->valuestring, curl_easy_strerror(res));
         } else {
             if (strlen(chunck.buffer) > 0 && bullish_engulfment(chunck.buffer)) {
-                if(strlen(chunck.buffer) > 0 && is_rising(market->valuestring, curl)) {
-                    get_info_coin(curl, chunck.buffer, market->valuestring, res, &chunck);
-                    add_obj_to_array(chunck.buffer, coinBuy, market->valuestring, founds);
+                if(strlen(chunck.buffer) > 0 && is_rising_mediun(market->valuestring, curl)) {
+                    if(strlen(chunck.buffer) > 0 && check_if_is_below(market->valuestring, curl)) {
+                        if(strlen(chunck.buffer) > 0 && is_rising_long(market->valuestring, curl)) {
+                            get_info_coin(curl, chunck.buffer, market->valuestring, res, &chunck);
+                            add_obj_to_array(chunck.buffer, coinBuy, market->valuestring, founds);
+                        }
+                    }
                 }
             }
         }
@@ -355,37 +499,33 @@ int main() {
 
     struct BufferStruct chunck = {NULL, 0};
 
-    chunck.buffer = malloc(1);
-    chunck.size = 0;
 
-    if(curl) {
-        CURLcode res;
-        curl_easy_setopt(curl, CURLOPT_URL, url);
-
-        // headers = curl_slist_append(headers, api_id_header);
-        // headers = curl_slist_append(headers, sign_header);
-        // headers = curl_slist_append(headers, timestamp_header);
-
-        // curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
-        curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&chunck);
-        res = curl_easy_perform(curl);
-        // curl_slist_free_all(headers);
-        if(res != CURLE_OK){
-            fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
+    while(1){
+        if(curl) {    
+            chunck.buffer = malloc(1);
+            chunck.size = 0;
+            CURLcode res;
+            curl_easy_setopt(curl, CURLOPT_URL, url);
+            curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
+            curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&chunck);
+            res = curl_easy_perform(curl);
+            if(res != CURLE_OK){
+                fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
+            }
+            else {
+                filter_and_save_json(chunck.buffer, "BTC", &chunck);
+                buy_or_notbuy(chunck.buffer, "4hour", curl, chunck, &chunck, founds);
+                
+                FILE *file;
+                file = fopen("data.json", "a");
+                fprintf(file, "%s", chunck.buffer);
+                fclose(file);
+                printf("%lu bytes retrieved and saved to data.json\n", (unsigned long)chunck.size);
+            }
+            free(chunck.buffer);
+            chunck.size = 0;
         }
-        else {
-            filter_and_save_json(chunck.buffer, "BTC", &chunck);
-            buy_or_notbuy(chunck.buffer, "4hour", curl, chunck, &chunck, founds);
-            
-            FILE *file;
-            file = fopen("data.json", "w");
-            fprintf(file, "%s", chunck.buffer);
-            fclose(file);
-            printf("%lu bytes retrieved and saved to data.json\n", (unsigned long)chunck.size);
-        }
-        free(chunck.buffer);
-        curl_easy_cleanup(curl);
     }
+    curl_easy_cleanup(curl);
     return 0;
 }
