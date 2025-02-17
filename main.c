@@ -336,7 +336,7 @@ int check_below(const char* buffer) {
 
     double sum;
 
-    for(int i = 0; i < cJSON_GetArraySize(candleAvg) - 1;i++) {
+    for(int i = 0; i < cJSON_GetArraySize(candleAvg);i++) {
         cJSON* item = cJSON_GetArrayItem(candleAvg, i);
         cJSON* avg = cJSON_GetObjectItem(item, "avg");
         sum = sum + avg->valuedouble;
