@@ -47,10 +47,15 @@ void hmac_sha256(const char *key, const char *data, char *output, size_t output_
 }
 
 void filter_and_save_json(const char *input, const char *filter_key, struct BufferStruct *chunk) {
+    if (input == NULL) {
+        fprintf(stderr, "Erro: Input JSON é NULL.\n");
+        return;
+    }
+
     cJSON *json = cJSON_Parse(input);
     if (!json) {
         fprintf(stderr, "Erro ao analisar JSON.\n");
-        return ;
+        return;
     }
 
     cJSON *data = cJSON_GetObjectItem(json, "data");
@@ -334,7 +339,7 @@ int check_below(const char* buffer) {
     sort(candleAvg);
     remove_candles(candleAvg);
 
-    double sum;
+    double sum = 0.0;
 
     for(int i = 0; i < cJSON_GetArraySize(candleAvg);i++) {
         cJSON* item = cJSON_GetArrayItem(candleAvg, i);
@@ -342,10 +347,14 @@ int check_below(const char* buffer) {
         sum = sum + avg->valuedouble;
     }
 
-    double resist = (sum / cJSON_GetArraySize(candleAvg));
+    int candleAvgSize = cJSON_GetArraySize(candleAvg);
+    double resist = (candleAvgSize > 0) ? (sum / candleAvgSize) : 0.0;
 
     cJSON_Delete(json);
-    return ((price_num < resist) && ((((price_num - price_open_num)/ price_open_num) * 100) < 3.3) && ((((price_num - price_open_num)/ price_open_num) * 100) > -9.9));
+    cJSON_Delete(candleAvg);
+    return ((price_num < resist) && 
+           ((((price_num - price_open_num)/ price_open_num) * 100) < 3.3) && 
+           ((((price_num - price_open_num)/ price_open_num) * 100) > -9.9));
 }
 
 int check_if_is_below(const char* coin, CURL *curl) {
@@ -403,7 +412,30 @@ int is_rising_long(const char* coin, CURL *curl) {
 
 }
 
-void create_order() {}
+void create_order() {
+    
+    // char* api_id = getenv("COINEX_API_KEY");
+    // char* api_secret = getenv("COINEX_SECRET_KEY");
+    // struct curl_slist *headers = NULL;
+
+    // char timestamp[32] ;
+    // sprintf(timestamp, "%lu", time(NULL) * 1000);
+
+    // char prepared_string[128];
+    // sprintf(prepared_string, "GET/v2/spot/market%s", timestamp);
+
+    // char hmac_result[128];
+    // hmac_sha256(api_secret, prepared_string, hmac_result, sizeof(hmac_result));
+
+    // char api_id_header[64];
+    // sprintf(api_id_header, "X-COINEX-KEY: %s",api_id );
+
+    // char sign_header[256];
+    // sprintf(sign_header, "X-COINEX-SIGN: %s", hmac_result);
+
+    // char timestamp_header[64];
+    // sprintf(timestamp_header, "X-COINEX-TIMESTAMP: %s", timestamp);
+}
 
 void buy_or_notbuy(
     const char *input, 
@@ -465,62 +497,41 @@ void buy_or_notbuy(
 
 }
 
+void fetch_market_data(CURL *curl, struct BufferStruct *payload) {
+    char url[256];
+    sprintf(url, "%s/spot/ticker", API_URL);
+    
+    payload->buffer = NULL;
+    payload->size = 0;
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)payload);
+
+    CURLcode res = curl_easy_perform(curl);
+    if(res != CURLE_OK) {
+        fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
+    }
+}
+
+void monitor_coin(CURL *curl, const char *buffer) {
+    system("clear");
+}
 
 int main() {
     CURL *curl = curl_easy_init();
 
-    char* api_id = getenv("COINEX_API_KEY");
-    char* api_secret = getenv("COINEX_SECRET_KEY");
-
     double founds = 0.03;
-
-    char url[256];
-    sprintf(url, "%s/spot/ticker", API_URL);
-
-    // struct curl_slist *headers = NULL;
-
-    // char timestamp[32] ;
-    // sprintf(timestamp, "%lu", time(NULL) * 1000);
-
-    // char prepared_string[128];
-    // sprintf(prepared_string, "GET/v2/spot/market%s", timestamp);
-
-    // char hmac_result[128];
-    // hmac_sha256(api_secret, prepared_string, hmac_result, sizeof(hmac_result));
-
-    // char api_id_header[64];
-    // sprintf(api_id_header, "X-COINEX-KEY: %s",api_id );
-
-    // char sign_header[256];
-    // sprintf(sign_header, "X-COINEX-SIGN: %s", hmac_result);
-
-    // char timestamp_header[64];
-    // sprintf(timestamp_header, "X-COINEX-TIMESTAMP: %s", timestamp);
 
     struct BufferStruct chunck = {NULL, 0};
 
-
-    while(1){
+    while(1) {
         if(curl) {    
-            chunck.buffer = malloc(1);
-            chunck.size = 0;
-            CURLcode res;
-            curl_easy_setopt(curl, CURLOPT_URL, url);
-            curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
-            curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&chunck);
-            res = curl_easy_perform(curl);
-            if(res != CURLE_OK){
-                fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
-            }
-            else {
-                filter_and_save_json(chunck.buffer, "BTC", &chunck);
-                buy_or_notbuy(chunck.buffer, "4hour", curl, chunck, &chunck, founds);
-                
-                FILE *file;
-                file = fopen("data.json", "a");
-                fprintf(file, "%s", chunck.buffer);
-                fclose(file);
-                printf("%lu bytes retrieved and saved to data.json\n", (unsigned long)chunck.size);
+            fetch_market_data(curl, &chunck);
+            filter_and_save_json(chunck.buffer, "BTC", &chunck);
+            buy_or_notbuy(chunck.buffer, "4hour", curl, chunck, &chunck, founds);
+            if(chunck.size > 4) {
+                monitor_coin(curl, chunck.buffer);
             }
             free(chunck.buffer);
             chunck.size = 0;
